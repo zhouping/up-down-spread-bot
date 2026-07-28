@@ -8,7 +8,7 @@
 .env
 *.env
 !.env.example
-config/config.json
+!config/config.json
 !config/config.example.json
 
 # =============================================================================

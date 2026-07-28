@@ -1,5 +1,4 @@
-"""
-start.py - Scheduled launcher for the up/down spread trading bot.
+"""start.py - Scheduled launcher for the up/down spread trading bot.
 
 Runs the bot only between START_HOUR:START_MIN and STOP_HOUR:STOP_MIN
 (system local time, 24h). Outside that window the bot is not running.
@@ -88,10 +87,16 @@ def _in_window():
     return now >= start or now < stop
 
 
-def _check_consecutive_losses(n=6):
-    """Read per-coin trades.jsonl, return True if the last n trades are all losses."""
+def _check_consecutive_losses(n=6, max_age_sec=3600):
+    """
+    返回 True 当且仅当：
+    1. 最近 n 笔交易（按时间排序）全是亏损；
+    2. 最新的一笔交易发生时间距今不超过 max_age_sec 秒（默认 1 小时）。
+    """
     coin_dirs = ["late_v3_btc", "late_v3_eth", "late_v3_sol"]
-    trades = []
+    trades = []                                   # (时间戳, 盈亏)
+    now = time.time()
+
     for d in coin_dirs:
         path = os.path.join(PROJECT_ROOT, "logs", d, "trades.jsonl")
         if not os.path.isfile(path):
@@ -109,10 +114,24 @@ def _check_consecutive_losses(n=6):
                         trades.append((ts, pnl))
                 except json.JSONDecodeError:
                     continue
+
     if len(trades) < n:
         return False
-    trades.sort(key=lambda x: x[0])
-    return all(pnl < 0 for _, pnl in trades[-n:])
+
+    trades.sort(key=lambda x: x[0])               # 升序：最旧 -> 最新
+    recent = trades[-n:]                          # 取最后 n 笔
+
+    # 1) 全部亏损？
+    if not all(pnl < 0 for _, pnl in recent):
+        return False
+
+    # 2) 最新一笔的时间是否在允许窗口内？
+    latest_ts = recent[-1][0]                     # 最新交易的时间戳
+    if (now - latest_ts) > max_age_sec:
+        # 最新交易已经超过设定的时效，认为不需要再做冷却
+        return False
+
+    return True
 
 
 def _kill_tree(proc):
@@ -173,7 +192,7 @@ def stop_bot():
 
 def _signal_handler(signum, frame):
     global _running
-    print("\n[START] Ctrl+C received — shutting down launcher.")
+    print("\n[START] Ctrl+C received - shutting down launcher.")
     _running = False
     stop_bot()
 
@@ -194,11 +213,11 @@ def main():
             if _cooldown_until > 0:
                 remaining = _cooldown_until - time.time()
                 if remaining > 0:
-                    print(f"[START] Cooldown active — bot stops for {int(remaining//60)}m {int(remaining%60)}s")
+                    print(f"[START] Cooldown active - bot stops for {int(remaining // 60)}m {int(remaining % 60)}s")
                     time.sleep(min(CHECK_INTERVAL, remaining))
                     continue
                 _cooldown_until = 0
-                print("[START] Cooldown expired — resuming normal schedule.")
+                print("[START] Cooldown expired - resuming normal schedule.")
 
             in_window = _in_window()
             if in_window and not bot_should_run:
@@ -211,13 +230,13 @@ def main():
             elif in_window and bot_should_run:
                 with _proc_lock:
                     if _bot_proc is not None and _bot_proc.poll() is not None:
-                        print("[START] Bot process exited unexpectedly — relaunching.")
+                        print("[START] Bot process exited unexpectedly - relaunching.")
                         _bot_proc = None
                         bot_should_run = False
                 # Check consecutive losses
                 if _check_consecutive_losses(6):
                     print(f"[START] 6 consecutive losses detected at {time.strftime('%Y-%m-%d %H:%M:%S')} "
-                          f"— stopping bot for 1h.")
+                          f"- stopping bot for 1h.")
                     stop_bot()
                     bot_should_run = False
                     _cooldown_until = time.time() + 3600
